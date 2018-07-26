@@ -78,7 +78,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     private final float[] projectionMatrix = new float[16];
     private final float[] viewMatrix = new float[16];
     private final float[] colorCorrectionRgba = new float[4];
-    private final StorageManager storageManager = new StorageManager();
+    private StorageManager storageManager;
 
     // Lock needed for synchronization.
     private final Object singleTapAnchorLock = new Object();
@@ -143,10 +143,18 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
                     snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
                     appAnchorState = AppAnchorState.NONE;
                 } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
-                    int shortCode = storageManager.nextShortCode(this);
-                    storageManager.storeUsingShortCode(this, shortCode, anchor.getCloudAnchorId());
-                    snackbarHelper.showMessageWithDismiss(
-                            this, "Anchor hosted successfully! Cloud Short Code: " + shortCode);
+                    storageManager.nextShortCode(
+                            (shortCode) -> {
+                                if (shortCode == null) {
+                                    snackbarHelper.showMessageWithDismiss(this, "Could not obtain a short code.");
+                                    return;
+                                }
+                                synchronized (singleTapAnchorLock) {
+                                    storageManager.storeUsingShortCode(shortCode, anchor.getCloudAnchorId());
+                                    snackbarHelper.showMessageWithDismiss(
+                                            this, "Anchor hosted successfully! Cloud Short Code: " + shortCode);
+                                }
+                            });
                     appAnchorState = AppAnchorState.HOSTED;
                 }
             } else if (appAnchorState == AppAnchorState.RESOLVING) {
@@ -186,6 +194,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
         setContentView(R.layout.activity_main);
         surfaceView = findViewById(R.id.surfaceview);
         displayRotationHelper = new DisplayRotationHelper(/*context=*/ this);
+        storageManager = new StorageManager(this);
 
         // Set up tap listener.
         gestureDetector =
@@ -455,13 +464,16 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
     private void onResolveOkPressed(String dialogValue) {
         int shortCode = Integer.parseInt(dialogValue);
-        String cloudAnchorId = storageManager.getCloudAnchorID(this, shortCode);
-        synchronized (singleTapAnchorLock) {
-            Anchor resolvedAnchor = session.resolveCloudAnchor(cloudAnchorId);
-            setNewAnchor(resolvedAnchor);
-            snackbarHelper.showMessage(this, "Now resolving anchor...");
-            appAnchorState = AppAnchorState.RESOLVING;
-        }
+        storageManager.getCloudAnchorID(
+                shortCode,
+                (cloudAnchorId) -> {
+                    synchronized (singleTapAnchorLock) {
+                        Anchor resolvedAnchor = session.resolveCloudAnchor(cloudAnchorId);
+                        setNewAnchor(resolvedAnchor);
+                        snackbarHelper.showMessage(this, "Now resolving anchor...");
+                        appAnchorState = AppAnchorState.RESOLVING;
+                    }
+                });
     }
 }
 
