@@ -78,13 +78,16 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     private final float[] projectionMatrix = new float[16];
     private final float[] viewMatrix = new float[16];
     private final float[] colorCorrectionRgba = new float[4];
+    private final StorageManager storageManager = new StorageManager();
 
     // Lock needed for synchronization.
     private final Object singleTapAnchorLock = new Object();
     private enum AppAnchorState {
         NONE,
         HOSTING,
-        HOSTED
+        HOSTED,
+        RESOLVING,
+        RESOLVED
     }
 
     @GuardedBy("singleTapAnchorLock")
@@ -131,17 +134,29 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
     private void checkUpdatedAnchor() {
         synchronized (singleTapAnchorLock) {
-            if (appAnchorState != AppAnchorState.HOSTING) {
+            if (appAnchorState != AppAnchorState.HOSTING && appAnchorState != AppAnchorState.RESOLVING) {
                 return;
             }
             Anchor.CloudAnchorState cloudState = anchor.getCloudAnchorState();
-            if (cloudState.isError()) {
-                snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
-                appAnchorState = AppAnchorState.NONE;
-            } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
-                snackbarHelper.showMessageWithDismiss(
-                        this, "Anchor hosted successfully! Cloud ID: " + anchor.getCloudAnchorId());
-                appAnchorState = AppAnchorState.HOSTED;
+            if (appAnchorState == AppAnchorState.HOSTING) {
+                if (cloudState.isError()) {
+                    snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
+                    appAnchorState = AppAnchorState.NONE;
+                } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
+                    int shortCode = storageManager.nextShortCode(this);
+                    storageManager.storeUsingShortCode(this, shortCode, anchor.getCloudAnchorId());
+                    snackbarHelper.showMessageWithDismiss(
+                            this, "Anchor hosted successfully! Cloud Short Code: " + shortCode);
+                    appAnchorState = AppAnchorState.HOSTED;
+                }
+            } else if (appAnchorState == AppAnchorState.RESOLVING) {
+                if (cloudState.isError()) {
+                    snackbarHelper.showMessageWithDismiss(this, "Error resolving anchor: " + cloudState);
+                    appAnchorState = AppAnchorState.NONE;
+                } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
+                    snackbarHelper.showMessageWithDismiss(this, "Anchor resolved successfully!");
+                    appAnchorState = AppAnchorState.RESOLVED;
+                }
             }
         }
     }
@@ -207,6 +222,20 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
                     synchronized (singleTapAnchorLock) {
                         setNewAnchor(null);
                     }
+                });
+
+        Button resolveButton = findViewById(R.id.resolve_button);
+        resolveButton.setOnClickListener(
+                (unusedView) -> {
+                    synchronized (singleTapAnchorLock) {
+                        if (anchor != null) {
+                            snackbarHelper.showMessageWithDismiss(this, "Please clear anchor first.");
+                            return;
+                        }
+                    }
+                    ResolveDialogFragment dialog = new ResolveDialogFragment();
+                    dialog.setOkListener(this::onResolveOkPressed);
+                    dialog.show(getSupportFragmentManager(), "Resolve");
                 });
     }
 
@@ -422,6 +451,17 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
         anchor = newAnchor;
         appAnchorState = AppAnchorState.NONE; // Add this line.
         snackbarHelper.hide(this); // Add this line.
+    }
+
+    private void onResolveOkPressed(String dialogValue) {
+        int shortCode = Integer.parseInt(dialogValue);
+        String cloudAnchorId = storageManager.getCloudAnchorID(this, shortCode);
+        synchronized (singleTapAnchorLock) {
+            Anchor resolvedAnchor = session.resolveCloudAnchor(cloudAnchorId);
+            setNewAnchor(resolvedAnchor);
+            snackbarHelper.showMessage(this, "Now resolving anchor...");
+            appAnchorState = AppAnchorState.RESOLVING;
+        }
     }
 }
 
